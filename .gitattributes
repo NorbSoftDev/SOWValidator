@@ -1,0 +1,13 @@
+# Normalise line endings in the repository; check out native in the working
+# tree so Windows editors behave.
+* text=auto
+
+# Executed by Linux CI runners -- these must keep LF or the shell steps fail
+# with "$'\r': command not found".
+.github/workflows/*.yml text eol=lf
+*.sh text eol=lf
+
+# Never diff or line-ending-convert these.
+*.exe binary
+*.dds binary
+*.png binary

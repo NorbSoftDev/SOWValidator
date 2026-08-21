@@ -1,0 +1,22 @@
+# Built binaries are published as GitHub Release assets, not committed --
+# a committed exe adds a new multi-megabyte blob to history on every rebuild
+# and cannot be pruned without rewriting history.
+# See .github/workflows/release.yml
+*.exe
+*.exe.sha256
+
+# Other build output
+*.test
+*.out
+*.prof
+
+# Go workspace files (machine-specific)
+go.work
+go.work.sum
+
+# Editor / OS noise
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
