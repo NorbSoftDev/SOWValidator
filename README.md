@@ -53,12 +53,21 @@ repository.
 
 ## Usage
 
-Run it with no arguments — or `-h` — and it prints the full option list with
-examples:
+Put it in your game install and start it with no arguments — by double-clicking
+it, say — and it finds the `Base` (Waterloo) or `BaseGB` (Gettysburg) folder
+beside it, checks the base game there, and writes the report to
+`sowvalidator.txt` inside that folder:
 
 ```
 sowvalidator
 ```
+
+It looks in the folder it was started from as well as the one it lives in, and
+accepts sitting inside the game folder itself. With no game folder to find —
+and with `-h` — it prints the full option list with examples instead.
+
+Checking DLC or mods, or sending the report somewhere other than
+`sowvalidator.txt`, means passing the options:
 
 ```
 sowvalidator -root DIR [-dlc NAME] [-mod NAME]... [-json] [-q]
