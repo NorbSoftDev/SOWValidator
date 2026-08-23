@@ -296,15 +296,19 @@ func run(out io.Writer, root, dlc string, mods []string, list, asJSON, quiet boo
 	// Later layers override earlier ones, matching the engine's walk from index
 	// 0 upward, so name sets and sprite geometry built in
 	// this order end up with the values the engine would use.
-	sets := checks.NewNameSets()
-	sprites := checks.NewSpriteSet()
+	ctx := &checks.Context{
+		Sets:    checks.NewNameSets(),
+		Sprites: checks.NewSpriteSet(),
+		Assets:  checks.NewAssets(),
+		Report:  rep,
+	}
 
 	type loaded struct {
 		spec *checks.PackSpec
 		file *datacsv.File
 	}
-	type refFile struct {
-		base string
+	type bespoke struct {
+		spec *checks.DataFile
 		file *datacsv.File
 	}
 
@@ -312,7 +316,10 @@ func run(out io.Writer, root, dlc string, mods []string, list, asJSON, quiet boo
 		packFiles    []loaded
 		modelFiles   []*datacsv.File
 		genericFiles []*datacsv.File
-		refFiles     []refFile
+		bespokeFiles []bespoke
+		mapFiles     []*datacsv.File
+		oobFiles     []*datacsv.File
+		scenarios    []scenarioDir
 		dataLayers   int
 	)
 
@@ -320,6 +327,20 @@ func run(out io.Writer, root, dlc string, mods []string, list, asJSON, quiet boo
 	replaced := map[string]*datacsv.File{}
 
 	for _, l := range layers {
+		if l.Dir != "" {
+			// Loose files a data row can name -- a .wav, a font, an AI
+			// library -- are found by looking in one named folder of each
+			// layer, so the index is built the same way.
+			for _, kind := range checks.AssetDirs {
+				ctx.Assets.Add(kind, checks.LayerDir(l.Dir, kind))
+			}
+
+			// Maps sit outside the data folder, one .csv per map, and a layer
+			// may add maps without adding data at all.
+			mapFiles = append(mapFiles, loadCSVs(checks.LayerDir(l.Dir, checks.DirMaps))...)
+			oobFiles = append(oobFiles, loadCSVs(checks.LayerDir(l.Dir, checks.DirOOBs))...)
+			scenarios = append(scenarios, loadScenarios(checks.LayerDir(l.Dir, checks.DirScen))...)
+		}
 		if l.DataDir == "" {
 			continue
 		}
@@ -332,7 +353,7 @@ func run(out io.Writer, root, dlc string, mods []string, list, asJSON, quiet boo
 				continue
 			}
 			short, _ := filepath.Rel(root, p)
-			sprites.AddFrom(f, short, spec.AnglesCol, spec.FramesCol, rep)
+			ctx.Sprites.AddFrom(f, short, spec.AnglesCol, spec.FramesCol, rep)
 
 			for i := range checks.PackSpecs {
 				if strings.EqualFold(checks.PackSpecs[i].Name, spec.Name) {
@@ -344,8 +365,25 @@ func run(out io.Writer, root, dlc string, mods []string, list, asJSON, quiet boo
 		p := filepath.Join(l.DataDir, "unitmodel.csv")
 		if f, err := datacsv.Load(p); err == nil {
 			short, _ := filepath.Rel(root, p)
-			sets.AddUnitModel(f, short)
+			ctx.Sets.AddUnitModel(f, short)
 			modelFiles = append(modelFiles, f)
+		}
+
+		// Files read the way their own loader reads them. Collecting every
+		// layer's names before any check runs is what lets a reference resolve
+		// against a file further down its own folder, or in another layer.
+		for i := range checks.DataFiles {
+			spec := &checks.DataFiles[i]
+			p := filepath.Join(l.DataDir, spec.Name)
+			f, err := datacsv.Load(p)
+			if err != nil {
+				continue
+			}
+			if spec.Collect != nil {
+				short, _ := filepath.Rel(root, p)
+				spec.Collect(ctx, f, short)
+			}
+			bespokeFiles = append(bespokeFiles, bespoke{spec: spec, file: f})
 		}
 
 		for _, base := range checks.GenericFiles {
@@ -360,23 +398,13 @@ func run(out io.Writer, root, dlc string, mods []string, list, asJSON, quiet boo
 				replaced[strings.ToLower(base)] = f
 			} else {
 				genericFiles = append(genericFiles, f)
-				refFiles = append(refFiles, refFile{base: base, file: f})
-			}
-
-			short, _ := filepath.Rel(root, p)
-			switch strings.ToLower(base) {
-			case "unittype.csv":
-				sets.AddUnitType(f, short)
-			case "sfx.csv":
-				sets.AddSfx(f, short)
 			}
 		}
 	}
 
 	// Fold in the winning copy of each whole-file-replacement file.
-	for base, f := range replaced {
+	for _, f := range replaced {
 		genericFiles = append(genericFiles, f)
-		refFiles = append(refFiles, refFile{base: base, file: f})
 	}
 
 	// ---- checks ----------------------------------------------------------
@@ -384,14 +412,29 @@ func run(out io.Writer, root, dlc string, mods []string, list, asJSON, quiet boo
 		checks.PackFrames(l.file, *l.spec, ix, rep)
 	}
 	for _, f := range modelFiles {
-		checks.ModelRefs(f, sprites, rep)
-		checks.ModGeometry(f, sprites, rep)
+		checks.ModelRefs(f, ctx.Sprites, rep)
+		checks.ModGeometry(f, ctx.Sprites, rep)
 	}
 	for _, f := range genericFiles {
 		checks.Generic(f, rep)
 	}
-	for _, r := range refFiles {
-		checks.Refs(r.file, r.base, sets, sprites, rep)
+	for _, b := range bespokeFiles {
+		b.spec.Check(ctx, b.file)
+	}
+	for _, f := range mapFiles {
+		checks.Maps(f, ctx.Sets, ctx.Sprites, rep)
+	}
+
+	// Every scenario is one the player can pick, so every one is checked. Its
+	// units come from a master order of battle in OOBs, which has to be read
+	// first for the scenario to be checked against it.
+	oobs := checks.NewOOBSet()
+	for _, f := range oobFiles {
+		oobs.Add(f)
+		checks.OOB(f, ctx.Sets, rep)
+	}
+	for _, sc := range scenarios {
+		checkScenario(ctx, oobs, sc)
 	}
 
 	// ---- output ----------------------------------------------------------
@@ -406,8 +449,8 @@ func run(out io.Writer, root, dlc string, mods []string, list, asJSON, quiet boo
 			}
 			fmt.Fprintf(out, "  %-4s %s%s\n", stackMark(l), l.Label(), note)
 		}
-		fmt.Fprintf(out, "\n%d .plist file(s), %d sprite pack(s), %d layer(s) with data\n\n",
-			len(ix.Files), len(ix.Packs), dataLayers)
+		fmt.Fprintf(out, "\n%d .plist file(s), %d sprite pack(s), %d layer(s) with data, %d map(s), %d scenario(s)\n\n",
+			len(ix.Files), len(ix.Packs), dataLayers, len(mapFiles), len(scenarios))
 	}
 
 	if asJSON {
@@ -426,5 +469,93 @@ func stackMark(l Layer) string {
 		return "[2]"
 	default:
 		return "[3]"
+	}
+}
+
+// loadCSVs reads every .csv directly inside dir, in name order. A directory
+// that is not there is not a failure: most layers carry only some of these
+// folders, which is how layering works.
+func loadCSVs(dir string) []*datacsv.File {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	var out []*datacsv.File
+	for _, e := range entries {
+		if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".csv") {
+			continue
+		}
+		f, err := datacsv.Load(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+// scenarioDir is one scenario folder, with whichever of its files are there.
+// A scenario needs a scenario.csv to be a scenario at all; the rest are
+// optional, and plenty of scenarios carry no extra scenery.
+type scenarioDir struct {
+	Name         string
+	Scenario     *datacsv.File
+	MapLocations *datacsv.File
+	BattleScript *datacsv.File
+	CaSfx        *datacsv.File
+}
+
+// loadScenarios reads every scenario folder under dir. The engine finds these
+// by name from the folder the player picks, so a folder with no scenario.csv
+// is not a scenario and is passed over rather than reported.
+func loadScenarios(dir string) []scenarioDir {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	var out []scenarioDir
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		sub := filepath.Join(dir, e.Name())
+
+		sc := scenarioDir{Name: e.Name()}
+		if f, err := datacsv.Load(filepath.Join(sub, "scenario.csv")); err == nil {
+			sc.Scenario = f
+		} else {
+			continue
+		}
+		if f, err := datacsv.Load(filepath.Join(sub, "maplocations.csv")); err == nil {
+			sc.MapLocations = f
+		}
+		if f, err := datacsv.Load(filepath.Join(sub, "battlescript.csv")); err == nil {
+			sc.BattleScript = f
+		}
+		if f, err := datacsv.Load(filepath.Join(sub, "casfx.csv")); err == nil {
+			sc.CaSfx = f
+		}
+		out = append(out, sc)
+	}
+	return out
+}
+
+// checkScenario checks one scenario folder. The files lean on each other --
+// the battle script names objectives from the file beside it and units from
+// the order of battle the scenario chose -- so they are checked together.
+func checkScenario(ctx *checks.Context, oobs *checks.OOBSet, sc scenarioDir) {
+	checks.Scenario(sc.Scenario, oobs, ctx.Sets, ctx.Report)
+
+	objectives := map[string]int{}
+	if sc.MapLocations != nil {
+		objectives = checks.MapLocations(sc.MapLocations, ctx.Sprites, ctx.Report)
+	}
+	if sc.BattleScript != nil {
+		checks.BattleScript(sc.BattleScript, objectives, checks.ScenarioUnits(sc.Scenario, oobs), ctx.Report)
+	}
+	if sc.CaSfx != nil {
+		checks.CaSfx(sc.CaSfx, ctx.Sprites, ctx.Report)
 	}
 }

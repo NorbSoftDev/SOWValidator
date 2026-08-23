@@ -1,10 +1,13 @@
 // Package datacsv reads the game's CSV files the same way the engine does.
 //
-// This deliberately does NOT use encoding/csv. The engine splits rows on raw
-// commas and has no concept of
-// quoting, so a quoted field containing a comma is silently mis-split at load.
-// To validate what the engine actually sees, we must split the same way -- and
-// separately flag quotes as suspicious.
+// This deliberately does NOT use encoding/csv. Fields are split by successive
+// CUtil::ParseGet calls (Shared/util.cpp:1138) over CUtil::ParseFind, which
+// knows one rule about quoting and no more: a quote counts only where a field
+// begins, and the delimiter is then looked for after the closing quote. A quote
+// anywhere else in a field is an ordinary character, and is stripped from the
+// value.
+//
+// Splitting any other way would validate a file the engine never sees.
 package datacsv
 
 import (
@@ -66,6 +69,42 @@ func (r Row) Float(i int) (val float64, ok bool) {
 	return 0, false
 }
 
+// SplitLoader splits a line into fields the way successive ParseGet calls do,
+// quoting rule and all. A quote is honoured only where a field begins; every
+// quote is then stripped from the value, as ParseGet does.
+func SplitLoader(s string) []string {
+	var out []string
+	for {
+		i := parseFind(s)
+		if i < 0 {
+			return append(out, strings.ReplaceAll(s, `"`, ""))
+		}
+		out = append(out, strings.ReplaceAll(s[:i], `"`, ""))
+		s = s[i+1:]
+	}
+}
+
+// parseFind is ParseFind: the next comma, unless the field opens with a quote,
+// in which case the next comma after the closing quote. An opening quote with
+// no closing one falls back to the plain search, which is what the engine's
+// Find does when it returns -1 for the closing quote.
+func parseFind(s string) int {
+	if len(s) > 0 && s[0] == '"' {
+		if j := strings.IndexByte(s[1:], '"'); j >= 0 {
+			if k := strings.IndexByte(s[j+2:], ','); k >= 0 {
+				return j + 2 + k
+			}
+			return -1
+		}
+	}
+	return strings.IndexByte(s, ',')
+}
+
+// Atoi is MyAtoi, which is C atoi: optional sign, digits, stop at the first
+// thing that is neither. Anything it cannot make sense of is 0, which is what
+// the engine then uses.
+func Atoi(s string) int { return atoiPrefix(s) }
+
 // atoiPrefix mimics C atoi(): optional sign, digits, stop at first non-digit.
 func atoiPrefix(s string) int {
 	s = strings.TrimSpace(s)
@@ -96,6 +135,25 @@ type File struct {
 	Path   string
 	Header Row
 	Rows   []Row
+	// Lines holds every line in the file, the dropped ones included. A file
+	// whose records span a run of lines -- drills.csv, where a drill declares
+	// on its first line how many lines of slot map follow it -- cannot be read
+	// from Rows alone, because the row filter throws away exactly the blank and
+	// comma-led lines such a run is free to contain.
+	Lines []string
+}
+
+// LineCount is how many lines the file has.
+func (f *File) LineCount() int { return len(f.Lines) }
+
+// RawLine returns line n exactly as it was read, numbered from 1 to match
+// Row.Line. A line past the end is "", which is also what a blank line gives,
+// so a caller walking off the end sees what it would see at any other blank.
+func (f *File) RawLine(n int) string {
+	if n < 1 || n > len(f.Lines) {
+		return ""
+	}
+	return f.Lines[n-1]
 }
 
 // Load reads path and applies the engine's row filter: the first line is the
@@ -120,7 +178,10 @@ func Load(path string) (*File, error) {
 		if lineNo == 1 {
 			// Strip a UTF-8 BOM so the first column name compares correctly.
 			raw = strings.TrimPrefix(raw, utf8BOM)
-			out.Header = Row{Line: lineNo, Fields: strings.Split(raw, ","), Raw: raw}
+		}
+		out.Lines = append(out.Lines, raw)
+		if lineNo == 1 {
+			out.Header = Row{Line: lineNo, Fields: SplitLoader(raw), Raw: raw}
 			continue
 		}
 		if raw == "" || raw[0] == ',' {
@@ -128,7 +189,7 @@ func Load(path string) (*File, error) {
 		}
 		out.Rows = append(out.Rows, Row{
 			Line:   lineNo,
-			Fields: strings.Split(raw, ","),
+			Fields: SplitLoader(raw),
 			Raw:    raw,
 		})
 	}

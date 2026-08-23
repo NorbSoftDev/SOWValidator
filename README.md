@@ -146,11 +146,26 @@ This is the check the engine gets wrong twice:
    passes the check and the engine reads one frame past the end. The correct
    bound is `begin + Frames × Angles`, which is what sowvalidator enforces.
 
-2. **Gaps are invisible.** The engine sizes its frame table with zeroes and only
-   marks the frames it actually loaded. A frame missing from the middle of a
-   pack therefore reads as a valid-looking texture slot rather than a missing
-   one, so its own "frame not found" check can never fire for it. sowvalidator
-   reports these as warnings.
+2. **Empty slots are invisible.** The engine sizes its frame table from slot 0
+   and zero-fills it, then marks only the slots it actually loaded. A slot no
+   `.plist` defines therefore reads back as a valid-looking texture rather than
+   a missing one, so its own "frame not found" check can never fire for it.
+   sowvalidator reports these as warnings.
+
+   Two shapes turn up. A pack whose keys start late — `IWOW0065.png` onwards,
+   with `First,65` in the CSV to match — leaves slots 0-63 empty:
+
+   ```
+   GFX_NatW_Walk: pack IWOW defines no sprites for slots 0-63, so its first
+   sprite is slot 64
+   ```
+
+   That is usually harmless, just an allocated-and-unused run of slots, and the
+   warning says so: the row that triggered it reads slots 64 and up, which are
+   all defined. It matters only if some other row's `First` points into the
+   empty range, where it will silently draw the wrong sprite instead of
+   failing. Holes punched into the middle of a pack are reported against its
+   last slot instead, and are far more likely to be a real mistake.
 
 Also flags `Angles <= 0` (the engine divides 360 by it), `Frames <= 0`,
 `First <= 0` (the engine subtracts 1 from it, making it negative), short rows,
@@ -192,94 +207,164 @@ action slot against the same slot in the referenced row, applying the engine's
 
 ### `row-shape` and `numeric`
 
-Structural validation for the remaining core data CSVs (`artillery`,
-`artytables`, `courier`, `drills`, `efx`, `gamefonts`, `gscreens`, `mscreens`,
-`munitions`, `replroster`, `rifles`, `sfx`, `statetables`, `unitattributes`,
-`unitglobal`, `unittype`). None of these have a documented schema, so the shape
-is inferred from each file's own contents rather than hardcoded.
+**Nothing is checked this way any more.** Every data file the engine loads now
+has a checker written against its own loader; these two remain only for a file
+added to `GenericFiles` before its format has been read.
 
-- **`row-shape`** reports rows with *fewer* fields than the file's modal width.
-  Extra trailing fields are ignored — trailing commas are endemic in these files
-  and the loader never reads them. Short rows are the dangerous case.
-- **`numeric`** reports isolated non-numeric values in an otherwise numeric
-  column.
+They worked by inference: a column whose values are 98% numeric over 20+
+samples was called numeric, and the stragglers reported as typos. That is a
+guess, and it can only ever be a guess. It cried wolf on `drills.csv` -- whose
+slot-map lines are not rows at all, so a lone `(0-17.5-1)89` sitting in what
+the header calls the `AboutFace` column looked like a typo -- while being blind
+to the wrong `Rows` values in the same file that strand whole blocks of men.
 
-These files are messy by nature: they carry documentation rows, stack several
-tables in one file with repeated sub-headers, and use deliberately non-numeric
-syntax such as `(0-47)87` in `drills.csv`. The thresholds are set accordingly —
-a column needs 20+ samples and 98% numeric agreement, and at most 2 outliers
-before the column is assumed to simply permit that syntax. Rows matching 3+
-header labels are treated as sub-headers and skipped. Untuned, these checks
-produced over 1,200 false positives.
+Where a file's real format is known, the guess is replaced. That is what the
+rest of this section is.
 
 ### `duplicate-key`
 
-Reports two rows claiming the same key. Every loader resolves this the same
-way — delete the existing entry, keep the new one — so the earlier definition
-is silently discarded.
+Reports two rows claiming the same key, for the sprite files that still go
+through it: `unitpack.csv`, `gfxpack.csv`, `gfx.csv` and `unitmodel.csv`, which
+all key on column 0. Every loader resolves a repeat the same way -- delete the
+existing entry, keep the new one -- so the earlier definition is silently
+discarded.
 
-The key column is **not** column 0 everywhere. It is whichever field the loader
-last reads before using it as a lookup key, so a file whose loader skips past
-the first field keys on column 1. Determined per file:
+Every other file now checks its own keys, in the column its own loader reads
+them from, which is not column 0 everywhere: a loader that reads past a display
+name keys on column 1.
 
-| Key column 0 | Key column 1 |
-|---|---|
-| `unitpack.csv` | `artillery.csv` |
-| `gfxpack.csv` | `rifles.csv` |
-| `gfx.csv` | `sfx.csv` |
-| `unitmodel.csv` | `efx.csv` |
-| `unitglobal.csv` | |
-| `unittype.csv` | |
-| `munitions.csv` | |
+### `drill`, `drill-map` and `drill-ref`
 
-Only files whose loader performs **one map-insert per row** are checked — that
-is the only shape where a repeated key is unambiguously a mistake. Excluded,
-because a repeated key is normal in them:
+`drills.csv` is not a table, so nothing that treats it as one can say anything
+true about it. Each drill is a **definition line** followed by exactly `Rows`
+more lines holding its **slot map**, which the loader reads inside a nested
+loop, cell by cell, and never considers definitions. Those cells have a grammar
+of their own, documented in the file's own notes rows:
 
-- `artytables.csv` — one row per experience level within a table, so
-  `ArtyTableID` repeats by design.
-- `drills.csv` — rows carry sub-slot data past the formation header, so
-  column 1 is not a per-row unique id in the actual file.
-- `statetables.csv` — sectioned state driven by blank separator rows
-.
-- `replroster.csv` — a 2D side/army index, not a name table
-.
-- `gscreens.csv`, `mscreens.csv`, `courier.csv`, `unitattributes.csv` —
-  record-type files where column 0 is a record type and only `NEW` rows open a
-  record; rows between belong to the record above them.
+```
+(rowdist-coldist-sprite-facing-subform-subtype-lock)slot
+```
 
-Those need per-file record-structure modelling rather than a key column.
+Only as many values as are needed have to be written, so `(10)87` sets a row
+distance and nothing else. The parentheses must *precede* the man number.
 
-### `xref`
+`Rows` is what holds the file together: it decides where the next drill starts,
+so a wrong one shifts every drill below it. These checks therefore walk the file
+the way `CForm::Init` does, and then apply that loader's own rules.
 
-Cross-file references, checked only where the resolution was confirmed in a
-loader. Guessing what a column points at is how false positives get
-reintroduced, so unverified relationships are left out.
+- **Record framing.** A line read as a definition that holds slot-map data means
+  the drill above it declared too few `Rows`, and the men on that line are never
+  placed. A slot-map line that defines a drill means it declared too many, and
+  the drill it swallowed is never loaded. A file in the older layout — which
+  opened on the drill ID with no `Name` column, so every value lands one column
+  from where the loader looks — is reported once, against its header.
+- **Slot placement.** Slots placed twice, slots never placed, and slot ids past
+  the engine's limit of 200, which the loader silently drops. A drill with fewer
+  than two men in it is reported as a hang: `SForm::Max` loops
+  `while (i >= imaxmen) i = i - imaxmen + 1`, which never terminates for an
+  `imaxmen` below 2, and every slot lookup goes through it.
+- **Cell grammar.** An unclosed `(`; a cell carrying no slot number, which the
+  loader writes one element *before* the start of the drill's arrays; values
+  that are not numbers; and sprite or subtype values outside what the notes rows
+  document.
+- **Values read and then ignored.** A per-slot row or column distance below zero
+  is parsed and then dropped, because the loader applies one only when it is
+  above zero. The file says one thing and the game does another.
+- **References.** `SubForm`, `ArtyForm` and a cell's `subform` must name a drill
+  that exists. Blank is normal and means no sub formation; a name that resolves
+  to nothing gets the same result, silently. Forward references are legal, since
+  the engine resolves these only once every `drills.csv` has been read.
 
-From `unitglobal.csv`:
+The ranges on the file's own type row are deliberately **not** enforced. They no
+longer describe the loader: it keeps these in a 64-bit fixed-point type with no
+clamp anywhere, and the shipped data itself sits outside them — brigade drills
+carry a `RowDist` of `350+`, and several carry an `AboutFace` of `2` where the
+type row says `[0/1]` and the loader only ever asks whether it is above zero.
+Reporting a value the loader is perfectly happy with is how a validator teaches
+people to ignore it.
 
-| Column(s) | References | Severity |
+### `unitglobal` and `unitglobal-ref`
+
+`unitglobal.csv` is a table, unlike `drills.csv`, but it is not read like one.
+`CSoldCmn::Init` takes only the first two fields and puts the rest of the line
+away in a buffer; `CSoldCmn::Load` reads that buffer much later, the first time
+something asks for the class. The column meanings therefore live in two
+functions, and a fault in the tail of a row surfaces mid-battle rather than at
+load.
+
+The row is also mostly runs of same-typed columns — six uniforms, nine sounds,
+four menus, then a list of drill ids that runs to the end of the line —
+pointing at four different files. Nothing about the shape of a column here says
+what belongs in it.
+
+| Column(s) | Checked against | Severity |
 |---|---|---|
-| 1 `TypeID` | `unittype.csv` column 0 | error — engine sets a fatal error |
-| 7–12 `Uniform 1-6` | `unitmodel.csv` column 0 | error |
-| 13–21 state sounds | `sfx.csv` column 1 | warning |
-| 22 flag bearer | `unitmodel.csv` column 0 | error |
+| 0 `Class` | must be present and unique; the loader keeps the last of a repeat | error |
+| 1 `Type` | `unittype.csv` — **blank counts**, the loader looks it up anyway | error, and the game refuses to start |
+| 2–3 `Alt Class`, `Captured Class` | another `Class` in this file, case-insensitively | error |
+| 4–6 speeds | must be numbers above zero, or the unit cannot move at that speed | error |
+| 7–12 `Uniform 1-6` | `unitmodel.csv`, **case-sensitively** | error |
+| 13–21 state sounds | `sfx.csv` | warning |
+| 22 flag bearer | `unitmodel.csv`; blank counts | error, see below |
+| 27+ formations | `drills.csv`; blank means the class has no such formation | error |
 
-From `munitions.csv` (`the ammunition loader`):
+Three of those are worth spelling out.
 
-| Column | References | Severity |
+**The flag bearer is a crash, not a missing sprite.** `Lookup`
+(`Shared/vechelp.inl:44`) leaves its out parameter untouched when the name
+misses, and `SSoldCmn` has no constructor, so `m_fsprite` keeps whatever was on
+the heap. `FindClass` then dereferences it with no null check. The six uniform
+slots do not have this problem — the loader sets each to `NULL` before looking
+it up — which is why a blank or wrong flag bearer is reported as an error in
+its own right rather than as one more dangling reference.
+
+**`unitglobal` → `unitmodel` is case-sensitive.** Neither the stored key nor
+the lookup string is upper-cased (`War3D/soldcmn.cpp:137`), so a case-only typo
+silently yields no sprite. That case is reported separately from a name that
+does not exist at all, since it is a much easier fix — and it is the one that
+looks right on the page.
+
+**The formation columns are a list, not a fixed set.** The loader reads at
+least ten drill ids and then keeps reading for as long as the line has fields
+left, so the check follows the row to its end rather than stopping at the last
+labelled column. Most rows are short, which is how the file says a class has no
+such formation, so only a name that fails to resolve is reported.
+
+Ranges are not enforced anywhere here, for the same reason as in `drills`: the
+loader imposes none, and what it really does with a bad value — reads it as
+zero, drops it, or dereferences a pointer it never set — is the thing worth
+reporting.
+
+### Files written before the format changed
+
+Three files carry a layout the current loader no longer reads. In each case
+every value lands some columns from where it is looked for, so the file is
+misread end to end and nothing said about its rows would be true:
+
+| File | Older layout | Detected by |
 |---|---|---|
-| 1 `Sprite Graphic` | any defined sprite | error |
-| 13 sound | `sfx.csv` column 1 | warning |
+| `drills.csv` | opened on the drill ID, with no `Name` column | `Rows` not in column 2 |
+| `unitglobal.csv` | two speeds rather than three, no `Mid Speed` | `Uniform 1` not in column 7 |
+| `sfx.csv` | no `ID` column, so sounds key on their `.wav` filename | `File` not in column 2 |
+| `artillery.csv` | no `MROF` column after the rate of fire | `ArtyTableID` not in column 15 |
+| `replroster.csv` | a list of ranks and names, not a side/army index | no `Side` column |
+| `gscreens/mscreens.csv` | one fewer column between the font and the position | `X Coord` not in column 6 |
+| OOB files | an `OOBMOD` column after `CLASS` that nothing reads | `Weapon` not in column 12 |
+| `scenario.csv` | no `BTN` column after `REG` | `Formation` not in column 14 |
+| `battlescript.csv` | no `FromId` column after `Command` | `X Coord` not in column 4 |
+| `unitattributes.csv` | tables opened by name, with no `NEW` row | no `NEW` row anywhere |
 
-**`unitglobal` → `unitmodel` is case-sensitive.** The engine calls
-an exact string comparison, and neither the stored key
- nor the lookup string is upper-cased, so a case-only
-typo silently yields no sprite. The check reports that case separately from a
-name that does not exist at all, since it is a much easier fix.
+The `OOBMOD` one is worth singling out, because a great many community mods
+carry it. Nothing in the engine reads that column: `COOB::Init` takes three
+columns after the six rank ones and calls them class, portrait and weapon, so
+in such a file it reads `OOBMOD` as each unit's portrait and the portrait as
+its weapon, and every column to the end of the row is one place out.
 
-Name sets are the union across every selected layer, mirroring how the engine
-layers base, DLC and mod content.
+Each is reported once, against the file's header, and the rest of that file is
+left alone. Where such a file would have contributed names that other files
+reference, the checks that resolve those names report **how many they had to
+leave unjudged** rather than calling them undefined — a name set short of a
+whole file cannot prove anything is missing from it.
 
 ### `sprite-duplicate`
 
@@ -292,9 +377,11 @@ definition wins and the earlier is deleted.
 - **Row filter** matches the engine: line 1 is the header, and any line that is
   empty or begins with a comma is skipped (,).
   That is how the CSVs carry their documentation rows.
-- **No quote handling**, deliberately. The engine splits on raw commas and has
-  no concept of quoting, so honouring quotes here would validate something the
-  engine never sees. Quotes in data rows are reported instead.
+- **One quoting rule**, matching the engine's and no more. `CUtil::ParseFind`
+  honours a quote only where a field begins, and then looks for the delimiter
+  after the closing quote; a quote anywhere else is an ordinary character, and
+  every quote is stripped from the value. Splitting any other way would
+  validate a file the engine never sees.
 - **`.plist` keys** are split exactly as does: the last 8
   characters are assumed to be `NNNN.png`, so `UO01D0001.png` yields pack
   `UO01D`, frame `0` (the engine subtracts 1 to make it 0-based).
@@ -311,10 +398,41 @@ internal/checks             the checks themselves
 internal/report             findings, severity, text and JSON output
 ```
 
+## What is checked
+
+Every CSV the engine loads, each against its own loader.
+
+**Logistics** — `artillery`, `artytables`, `courier`, `drills`, `efx`,
+`gamefonts`, `gfx`, `gfxpack`, `gscreens`, `mscreens`, `munitions`,
+`replroster`, `rifles`, `sfx`, `statetables`, `unitattributes`, `unitglobal`,
+`unitmodel`, `unitpack`, `unittype`.
+
+**Maps** — every `.csv` in each layer's `Maps` folder, section by section.
+
+**Scenarios** — every scenario folder, because every one of them is a scenario
+the player can pick: its `scenario.csv` joined to the master order of battle it
+names, its `maplocations.csv`, its `battlescript.csv` checked against both, and
+its `casfx.csv`.
+
+**OOBs** — every `.csv` in each layer's `OOBs` folder.
+
+Loose files a data row names are checked too, where the engine finds them by
+walking one folder of each layer: a sound's `.wav` in `Sounds`, a font's `.pft`
+in `Graphics\Fonts`, a unit type's AI library in `Modules`. An install whose
+content lives in `.sow` catalogue archives switches that off rather than report
+files it cannot see as missing.
+
 ## Not yet covered
 
 - `.layout` files (MyGUI) referencing names in the CSVs
-- The other core data files
-- Scenarios, OOBs, Maps, Campaign
+- `.ini` files: `battledef.ini`, `defines.ini`, and each map's and scenario's
+- The Campaign folder's own `battlescript.csv` and `maplocations.csv`, which are
+  read by a different loader from the scenario ones
+- What each screen control does with its `Graphic` column, which differs by
+  control type -- a texture file for one, a display tag for another, a sprite
+  for the rest
 - Bounds tied to engine constants (`LEN_NAME` 256, `MAXMEN` 200), which should
   be generated from the C++ headers rather than hardcoded
+- `commands.go` and `lists.go` are transcribed from the engine's own tables. If
+  a command or a built-in courier list is added to the engine, add it there too
+  or a script using it reads as unknown.

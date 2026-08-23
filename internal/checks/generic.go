@@ -20,24 +20,11 @@ import (
 // column syntax that is deliberately non-numeric. The thresholds below are set
 // so that only genuine outliers are reported -- a validator that cries wolf
 // does not get run.
-var GenericFiles = []string{
-	"artillery.csv",
-	"artytables.csv",
-	"courier.csv",
-	"drills.csv",
-	"efx.csv",
-	"gamefonts.csv",
-	"gscreens.csv",
-	"mscreens.csv",
-	"munitions.csv",
-	"replroster.csv",
-	"rifles.csv",
-	"sfx.csv",
-	"statetables.csv",
-	"unitattributes.csv",
-	"unitglobal.csv",
-	"unittype.csv",
-}
+// GenericFiles is now empty: every data file the engine loads has a checker
+// written against its own loader, in DataFiles. The checks below are kept for
+// anything added here before its format is known -- a guess is better than
+// nothing, and worse than reading the loader.
+var GenericFiles []string
 
 // ReplaceFiles are read only from the highest layer that provides them, so
 // only the highest layer providing them is ever read. This is by design: their
@@ -72,8 +59,6 @@ type KeySpec struct {
 //
 //   - artytables.csv  one row per experience level within a table, so
 //     ArtyTableID repeats by design.
-//   - drills.csv      rows carry sub-slot data beyond the formation header,
-//     so column 1 is not a per-row unique id in practice.
 //   - statetables.csv sectioned state driven by blank separator rows
 //
 // .
@@ -88,13 +73,12 @@ type KeySpec struct {
 // guessing produced hundreds of false positives.
 var FileKeys = map[string]KeySpec{
 	// Key in column 0.
-	"unitpack.csv":   {Col: 0},
-	"gfxpack.csv":    {Col: 0},
-	"gfx.csv":        {Col: 0},
-	"unitmodel.csv":  {Col: 0},
-	"unitglobal.csv": {Col: 0},
-	"unittype.csv":   {Col: 0},
-	"munitions.csv":  {Col: 0},
+	"unitpack.csv":  {Col: 0},
+	"gfxpack.csv":   {Col: 0},
+	"gfx.csv":       {Col: 0},
+	"unitmodel.csv": {Col: 0},
+	"unittype.csv":  {Col: 0},
+	"munitions.csv": {Col: 0},
 
 	// Key in column 1: the loader parses past column 0 first.
 	"artillery.csv": {Col: 1},
@@ -112,7 +96,13 @@ const (
 	numericRatio = 0.98
 	// maxOutliers caps how many non-numeric values a numeric column may have
 	// before we conclude the column simply permits a non-numeric syntax
-	// (e.g. drills.csv's "(0-47)87") rather than containing typos.
+	// rather than containing typos.
+	//
+	// This threshold is a confession, not a design: inferring a column's type
+	// from the other values in it can only ever guess. Where a file's real
+	// format is known -- see drills.go and unitglobal.go, which read those
+	// files the way their loaders do -- write the check against the format
+	// instead and take the file out of GenericFiles.
 	maxOutliers = 2
 )
 
