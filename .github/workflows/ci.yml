@@ -1,12 +1,24 @@
 name: CI
 
-# Build and vet on every push and pull request, so a broken commit is caught
-# before anyone tags a release from it.
+# Checks every push and pull request, and on main also publishes what it
+# built, so there is always a current binary to download without tagging one.
+#
+# Tagged releases are a separate workflow and are not touched by this: they
+# stay as fixed points, built from the tagged commit. This one keeps a single
+# rolling prerelease, tagged latest-build, pointing at the head of main.
+#
+# The tag is deliberately not called "latest". GitHub's /releases/latest/ URL
+# means "the newest release that is not a prerelease", which is a different
+# thing entirely -- having both would give two near-identical download URLs
+# that serve different files.
 
 on:
   push:
     branches: ["main"]
   pull_request:
+
+permissions:
+  contents: write # required to publish the rolling build
 
 jobs:
   build:
@@ -31,9 +43,39 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Test
+        run: go test ./...
+
       - name: Build (windows/amd64)
         env:
           GOOS: windows
           GOARCH: amd64
           CGO_ENABLED: 0
-        run: go build -trimpath -o /dev/null .
+        # -trimpath keeps build-machine paths out of the binary;
+        # -s -w drop the symbol table and DWARF data to shrink it.
+        run: go build -trimpath -ldflags="-s -w" -o sowvalidator.exe .
+
+      - name: Checksum
+        run: sha256sum sowvalidator.exe | tee sowvalidator.exe.sha256
+
+      # Everything below is main only. A pull request is built and tested, but
+      # nothing it produces is published.
+      - name: Publish rolling build
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # The tag has to move with main, and a release's tag cannot be
+        # repointed, so the old one goes first. Uses the gh CLI preinstalled on
+        # the runner rather than a third-party action, so nothing outside
+        # GitHub's own tooling touches the release.
+        run: |
+          gh release delete latest-build --yes --cleanup-tag || true
+          gh release create latest-build \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "Latest build from main" \
+            --notes "Built automatically from ${GITHUB_SHA:0:7} on $(date -u '+%Y-%m-%d %H:%M UTC').
+
+          This is the head of main, not a tagged release. It is replaced by the
+          next push. For a fixed version, use one of the tagged releases." \
+            sowvalidator.exe sowvalidator.exe.sha256

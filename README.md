@@ -10,14 +10,16 @@ the same files the same way, then applies the checks the engine does not.
 
 ## Download
 
-**[Download sowvalidator.exe](https://github.com/NorbSoftDev/SOWValidator/releases/latest/download/sowvalidator.exe)**
-— that link always serves the newest release.
+**[Download sowvalidator.exe](https://github.com/NorbSoftDev/SOWValidator/releases/download/latest-build/sowvalidator.exe)**
+— always the newest build, rebuilt automatically on every push to `main`.
+
+There is also a [newest tagged release](https://github.com/NorbSoftDev/SOWValidator/releases/latest/download/sowvalidator.exe)
+if you want a fixed version that will not move under you.
 
 A single self-contained binary: no runtime, no DLLs, nothing to install. Put it
 anywhere and run it from a command prompt.
 
-Every release also ships `sowvalidator.exe.sha256` if you want to verify the
-download:
+Both ship `sowvalidator.exe.sha256` if you want to verify the download:
 
 ```
 certutil -hashfile sowvalidator.exe SHA256
@@ -39,17 +41,22 @@ Nothing beyond the Go standard library. Go 1.25+.
 
 ## Releasing
 
-Releases are built by GitHub Actions from the tagged commit, so the published
-binary always matches the source at that tag:
+Nothing has to be done to publish a build. Every push to `main` runs
+`.github/workflows/ci.yml`, which checks formatting, vets, runs the tests,
+cross-compiles for windows/amd64 and replaces the `latest-build` prerelease
+with what it produced. A pull request is built and tested the same way, but
+nothing it produces is published.
+
+Tag when a version is worth keeping still:
 
 ```
 git tag v1.0.0
 git push origin v1.0.0
 ```
 
-`.github/workflows/release.yml` cross-compiles for windows/amd64, writes a
-SHA-256, and attaches both to the release. Binaries are never committed to the
-repository.
+`.github/workflows/release.yml` builds that tagged commit and publishes it as a
+release of its own, which the rolling build never touches. Both write a SHA-256
+alongside the binary. Binaries are never committed to the repository.
 
 ## Usage
 
