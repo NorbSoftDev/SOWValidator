@@ -10,16 +10,16 @@ the same files the same way, then applies the checks the engine does not.
 
 ## Download
 
-**[Download sowvalidator.exe](https://github.com/NorbSoftDev/SOWValidator/releases/download/latest-build/sowvalidator.exe)**
-— always the newest build, rebuilt automatically on every push to `main`.
-
-There is also a [newest tagged release](https://github.com/NorbSoftDev/SOWValidator/releases/latest/download/sowvalidator.exe)
-if you want a fixed version that will not move under you.
+**[Download sowvalidator.exe](https://github.com/NorbSoftDev/SOWValidator/releases/latest/download/sowvalidator.exe)**
+— that link always serves the newest release, and there is a new one for every
+change pushed.
 
 A single self-contained binary: no runtime, no DLLs, nothing to install. Put it
-anywhere and run it from a command prompt.
+anywhere and run it from a command prompt. `sowvalidator -version` says which
+build it is, and so does the first line of every report it writes.
 
-Both ship `sowvalidator.exe.sha256` if you want to verify the download:
+Every release also ships `sowvalidator.exe.sha256` if you want to verify the
+download:
 
 ```
 certutil -hashfile sowvalidator.exe SHA256
@@ -41,22 +41,28 @@ Nothing beyond the Go standard library. Go 1.25+.
 
 ## Releasing
 
-Nothing has to be done to publish a build. Every push to `main` runs
-`.github/workflows/ci.yml`, which checks formatting, vets, runs the tests,
-cross-compiles for windows/amd64 and replaces the `latest-build` prerelease
-with what it produced. A pull request is built and tested the same way, but
-nothing it produces is published.
+Nothing has to be done. Every push to `main` runs `.github/workflows/ci.yml`,
+which checks formatting, vets, runs the tests, cross-compiles for
+windows/amd64, and publishes the result as the next patch version — `v1.0.3`
+becomes `v1.0.4`. The version is stamped into the binary as it is built, so
+`sowvalidator -version` and every report it writes name the build they came
+from. A pull request is built and tested the same way and publishes nothing.
 
-Tag when a version is worth keeping still:
+To start a new minor or major line, tag it by hand:
 
 ```
-git tag v1.0.0
-git push origin v1.0.0
+git tag v1.1.0
+git push origin v1.1.0
 ```
 
-`.github/workflows/release.yml` builds that tagged commit and publishes it as a
-release of its own, which the rolling build never touches. Both write a SHA-256
-alongside the binary. Binaries are never committed to the repository.
+`.github/workflows/release.yml` builds and publishes that one. The automatic
+numbering then carries on from it, because it always reads the highest existing
+tag rather than counting its own releases. The two never both publish the same
+commit: the automatic one stands aside when the commit it is building is
+already tagged.
+
+Both write a SHA-256 alongside the binary. Binaries are never committed to the
+repository.
 
 ## Usage
 
@@ -87,6 +93,7 @@ sowvalidator -root DIR -list
   -mod NAME   mod to load. Repeat the flag for each mod; any number may be
               loaded together, and they are applied in the order given.
   -list       list the DLC and mods installed under -root, then exit.
+  -version    print the version and exit.
   -json       emit findings as JSON.
   -q          only print errors, not warnings (also suppresses the header,
               so output pipes cleanly).

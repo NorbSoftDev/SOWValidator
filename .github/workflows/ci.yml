@@ -1,16 +1,18 @@
 name: CI
 
-# Checks every push and pull request, and on main also publishes what it
-# built, so there is always a current binary to download without tagging one.
+# Checks every push and pull request. On main it also releases what it built,
+# under the next patch version, so there is always a current binary to
+# download and every one of them says which build it is.
 #
-# Tagged releases are a separate workflow and are not touched by this: they
-# stay as fixed points, built from the tagged commit. This one keeps a single
-# rolling prerelease, tagged latest-build, pointing at the head of main.
+# Versioning: the next version is the highest vX.Y.Z tag with its patch number
+# raised by one. To start a new minor or major line, tag it by hand --
 #
-# The tag is deliberately not called "latest". GitHub's /releases/latest/ URL
-# means "the newest release that is not a prerelease", which is a different
-# thing entirely -- having both would give two near-identical download URLs
-# that serve different files.
+#   git tag v1.1.0 && git push origin v1.1.0
+#
+# -- and the automatic numbering carries on from there, because it always
+# reads the highest tag rather than counting its own releases. Pushing a tag
+# by hand is handled by release.yml; this workflow stands aside when the
+# commit it is building is already tagged, so the two never both publish.
 
 on:
   push:
@@ -18,7 +20,7 @@ on:
   pull_request:
 
 permissions:
-  contents: write # required to publish the rolling build
+  contents: write # required to tag and to publish the release
 
 jobs:
   build:
@@ -26,6 +28,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The version comes from the tag history, which a shallow clone
+          # does not have.
+          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
@@ -46,36 +52,66 @@ jobs:
       - name: Test
         run: go test ./...
 
+      # Everything from here is main only. A pull request is built and tested
+      # by the steps above and publishes nothing.
+      - name: Work out the next version
+        id: version
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          set -euo pipefail
+
+          # A commit that already carries a version tag is one release.yml is
+          # publishing, or has published. Leave it alone.
+          existing=$(git tag --points-at HEAD | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)
+          if [ -n "$existing" ]; then
+            echo "$existing is already tagged on this commit; nothing to do here."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Highest existing version, by version-sort rather than by date, so
+          # a tag pushed late for an older line does not become the base.
+          latest=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -1)
+          if [ -z "$latest" ]; then
+            latest=v0.0.0
+          fi
+
+          IFS=. read -r major minor patch <<< "${latest#v}"
+          next="v${major}.${minor}.$((patch + 1))"
+
+          echo "$latest -> $next"
+          echo "skip=false"        >> "$GITHUB_OUTPUT"
+          echo "version=$next"     >> "$GITHUB_OUTPUT"
+
       - name: Build (windows/amd64)
+        if: steps.version.outputs.skip == 'false'
         env:
           GOOS: windows
           GOARCH: amd64
           CGO_ENABLED: 0
-        # -trimpath keeps build-machine paths out of the binary;
-        # -s -w drop the symbol table and DWARF data to shrink it.
-        run: go build -trimpath -ldflags="-s -w" -o sowvalidator.exe .
+        # -trimpath keeps build-machine paths out of the binary; -s -w drop the
+        # symbol table and DWARF data to shrink it; -X stamps the version in so
+        # the binary can say which build it is.
+        run: |
+          go build -trimpath \
+            -ldflags="-s -w -X main.version=${{ steps.version.outputs.version }}" \
+            -o sowvalidator.exe .
 
       - name: Checksum
+        if: steps.version.outputs.skip == 'false'
         run: sha256sum sowvalidator.exe | tee sowvalidator.exe.sha256
 
-      # Everything below is main only. A pull request is built and tested, but
-      # nothing it produces is published.
-      - name: Publish rolling build
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      # Uses the gh CLI preinstalled on the runner rather than a third-party
+      # action, so nothing outside GitHub's own tooling touches the release.
+      # gh creates the tag itself from --target, so there is no separate push.
+      - name: Tag and release
+        if: steps.version.outputs.skip == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
-        # The tag has to move with main, and a release's tag cannot be
-        # repointed, so the old one goes first. Uses the gh CLI preinstalled on
-        # the runner rather than a third-party action, so nothing outside
-        # GitHub's own tooling touches the release.
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          gh release delete latest-build --yes --cleanup-tag || true
-          gh release create latest-build \
-            --prerelease \
+          gh release create "$VERSION" \
             --target "$GITHUB_SHA" \
-            --title "Latest build from main" \
-            --notes "Built automatically from ${GITHUB_SHA:0:7} on $(date -u '+%Y-%m-%d %H:%M UTC').
-
-          This is the head of main, not a tagged release. It is replaced by the
-          next push. For a fixed version, use one of the tagged releases." \
+            --title "$VERSION" \
+            --generate-notes \
             sowvalidator.exe sowvalidator.exe.sha256

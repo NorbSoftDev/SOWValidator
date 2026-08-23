@@ -1,13 +1,19 @@
 name: Release
 
 # Publishes a Windows binary as a release asset whenever a version tag is
-# pushed:
+# pushed by hand:
 #
-#   git tag v1.0.0
-#   git push origin v1.0.0
+#   git tag v1.1.0
+#   git push origin v1.1.0
 #
 # The binary is built from the tagged commit by the runner, so what users
 # download always matches the source at that tag.
+#
+# Every push to main is already released automatically under the next patch
+# version by ci.yml. This workflow is for starting a new minor or major line;
+# the automatic numbering carries on from whatever is tagged here, and ci.yml
+# stands aside when the commit it is building already has a tag, so the two
+# never both publish the same commit.
 
 on:
   push:
@@ -31,14 +37,19 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Test
+        run: go test ./...
+
       - name: Build (windows/amd64)
         env:
           GOOS: windows
           GOARCH: amd64
           CGO_ENABLED: 0
-        # -trimpath keeps build-machine paths out of the binary;
-        # -s -w drop the symbol table and DWARF data to shrink it.
-        run: go build -trimpath -ldflags="-s -w" -o sowvalidator.exe .
+        # -trimpath keeps build-machine paths out of the binary; -s -w drop the
+        # symbol table and DWARF data to shrink it; -X stamps the tag in so the
+        # binary can say which build it is.
+        run: |
+          go build -trimpath             -ldflags="-s -w -X main.version=$GITHUB_REF_NAME"             -o sowvalidator.exe .
 
       - name: Checksum
         run: sha256sum sowvalidator.exe | tee sowvalidator.exe.sha256

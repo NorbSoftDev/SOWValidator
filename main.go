@@ -34,6 +34,12 @@ import (
 	"github.com/NorbSoftDev/SOWValidator/internal/report"
 )
 
+// version is stamped in at build time, with -ldflags "-X main.version=v1.2.3".
+// A binary built any other way says "dev" rather than claiming a version it
+// does not have -- a report headed "dev" came from someone's working copy,
+// which is worth knowing when one is sent to you.
+var version = "dev"
+
 // printHelp writes the full option list. It goes to stdout so it can be piped
 // or redirected like any other output.
 func printHelp(w io.Writer) {
@@ -76,6 +82,7 @@ CONTENT TO LOAD
   -dlc Ligny matches "Scourge Of War - Ligny".
 
 OUTPUT
+  -version      Print the version and exit.
   -json         Emit findings as JSON instead of text.
   -q            Show errors only, hiding warnings and the header, so the
                 output pipes or redirects cleanly.
@@ -135,6 +142,7 @@ func main() {
 	list := flag.Bool("list", false, "list the DLC and mods available under -root, then exit")
 	asJSON := flag.Bool("json", false, "emit findings as JSON")
 	quiet := flag.Bool("q", false, "only print errors, not warnings")
+	showVer := flag.Bool("version", false, "print the version and exit")
 
 	// Send -h and flag-parse errors to stdout alongside the help text, so a
 	// user redirecting output captures the whole thing.
@@ -164,6 +172,11 @@ func main() {
 	}
 
 	flag.Parse()
+
+	if *showVer {
+		fmt.Println("sowvalidator", version)
+		return
+	}
 
 	if strings.TrimSpace(*root) == "" {
 		fmt.Fprintln(os.Stderr, "sowvalidator: -root is required -- point it at your Base or BaseGB folder.")
@@ -230,7 +243,7 @@ func runToFile(root string) (bool, error) {
 		return false, fmt.Errorf("cannot write %s: %w", out, err)
 	}
 
-	fmt.Printf("Checking %s\n", root)
+	fmt.Printf("sowvalidator %s\nChecking %s\n", version, root)
 	rep, runErr := run(f, root, "", nil, false, false, false)
 	if runErr != nil {
 		// The console window is gone the moment this exits, so leave the
@@ -439,7 +452,7 @@ func run(out io.Writer, root, dlc string, mods []string, list, asJSON, quiet boo
 
 	// ---- output ----------------------------------------------------------
 	if !asJSON && !quiet {
-		fmt.Fprintf(out, "Checking %s\n", root)
+		fmt.Fprintf(out, "sowvalidator %s\nChecking %s\n", version, root)
 		for _, l := range layers {
 			note := ""
 			if l.DataDir == "" && l.PackDir == "" {
