@@ -33,6 +33,27 @@ func (p *Pack) Max() int {
 	return max
 }
 
+// Min returns the lowest frame index present, or -1 when empty.
+func (p *Pack) Min() int {
+	min := -1
+	for f := range p.Frames {
+		if min == -1 || f < min {
+			min = f
+		}
+	}
+	return min
+}
+
+// Files returns the .plist files that contributed frames to this pack, sorted.
+func (p *Pack) Files() []string {
+	out := make([]string, 0, len(p.Sources))
+	for f := range p.Sources {
+		out = append(out, f)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // Missing lists frame indices in [begin, begin+count) that are absent.
 func (p *Pack) Missing(begin, count int) []int {
 	var out []int

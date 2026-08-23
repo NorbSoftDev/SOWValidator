@@ -139,13 +139,52 @@ func PackFrames(f *datacsv.File, spec PackSpec, ix *plist.Index, rep *report.Rep
 		}
 
 		if gaps := pack.Gaps(); len(gaps) > 0 {
-			rep.Warnf(check, f.Path, row.Line,
-				fmt.Sprintf("holes at: %s\nThe engine cannot detect these: it sizes its frame table with\n"+
-					"zeroes and only marks frames it actually loaded, so a hole reads as a\n"+
-					"valid-looking texture slot rather than a missing one.", summarise(gaps)),
-				"%s: packed sprite %s has %d gap(s) below its highest frame", name, file, len(gaps))
+			reportGaps(rep, check, f, row.Line, name, file, pack, gaps, begin, need)
 		}
 	}
+}
+
+// reportGaps explains slots that no .plist defines for a pack. Either the pack
+// simply starts numbering late -- the artist exported from 0065 onwards, say --
+// or there are holes punched into the middle of its range. The engine sees
+// neither, so spell out which slots are empty, what the pack therefore starts
+// at, and why an empty slot is not harmless.
+func reportGaps(rep *report.Report, check string, f *datacsv.File, line int,
+	name, file string, pack *plist.Pack, gaps []int, begin, need int) {
+
+	lowest := pack.Min()
+	leadingOnly := len(gaps) == lowest // the gaps are exactly slots 0..lowest-1
+
+	var msg string
+	if leadingOnly {
+		msg = fmt.Sprintf("%s: pack %s defines no sprites for slots %s, so its first sprite is slot %d",
+			name, file, summarise(gaps), lowest)
+	} else {
+		msg = fmt.Sprintf("%s: pack %s defines no sprites for slots %s, which sit below its last slot %d",
+			name, file, summarise(gaps), pack.Max())
+	}
+
+	var b strings.Builder
+	for _, src := range pack.Files() {
+		fmt.Fprintf(&b, "defined by: %s\n", rep.Rel(src))
+	}
+	if leadingOnly {
+		fmt.Fprintf(&b, "Slots are 0-based and the .plist numbers its keys from 1, so the empty\n"+
+			"slots are the keys %s%04d.png through %s%04d.png -- simply not in the .plist.\n",
+			file, 1, file, lowest)
+	} else {
+		fmt.Fprintf(&b, "Slots are 0-based and the .plist numbers its keys from 1, so empty slot\n"+
+			"%d is the key %s%04d.png.\n", gaps[0], file, gaps[0]+1)
+	}
+	fmt.Fprintf(&b, "This row itself is fine -- it reads slots %d-%d, which are all defined.\n",
+		begin, begin+need-1)
+	b.WriteString("The empty slots are still allocated, though: the engine sizes its frame\n" +
+		"table from slot 0 and zero-fills it, then marks only the slots it loaded.\n" +
+		"So they waste memory, and an empty slot reads back as a valid-looking texture\n" +
+		"rather than a missing one -- any row pointing into the empty range silently\n" +
+		"draws the wrong sprite instead of failing.")
+
+	rep.Warnf(check, f.Path, line, b.String(), "%s", msg)
 }
 
 // summarise collapses a sorted int slice into compact ranges, capped so a

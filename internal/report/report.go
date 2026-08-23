@@ -79,6 +79,10 @@ func (r *Report) Count(sev Severity) int {
 	return n
 }
 
+// Rel shortens a path for display, for callers building Detail text that
+// mentions a file other than the one the finding is anchored to.
+func (r *Report) Rel(p string) string { return r.rel(p) }
+
 // rel shortens a path for display.
 func (r *Report) rel(p string) string {
 	if r.Root == "" {
