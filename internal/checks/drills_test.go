@@ -53,6 +53,35 @@ func wantFinding(t *testing.T, rep *report.Report, line int, want string) {
 	}
 }
 
+// wantSeverity fails unless the finding on the given line mentioning want
+// carries the given severity.
+func wantSeverity(t *testing.T, rep *report.Report, line int, want string, sev report.Severity) {
+	t.Helper()
+
+	for _, f := range rep.Findings {
+		if f.Line == line && strings.Contains(f.Message, want) {
+			if f.Severity != sev {
+				t.Errorf("finding %q is a %s, want a %s", want, f.Severity, sev)
+			}
+			return
+		}
+	}
+	t.Errorf("no finding on line %d mentioning %q\n%s", line, want, dumpFindings(rep))
+}
+
+// wantDetail fails unless some finding on the given line carries want in
+// its detail block.
+func wantDetail(t *testing.T, rep *report.Report, line int, want string) {
+	t.Helper()
+
+	for _, f := range rep.Findings {
+		if f.Line == line && strings.Contains(f.Detail, want) {
+			return
+		}
+	}
+	t.Errorf("want a finding on line %d whose detail has %q\n%s", line, want, dumpFindings(rep))
+}
+
 func wantClean(t *testing.T, rep *report.Report) {
 	t.Helper()
 	if len(rep.Findings) != 0 {
@@ -170,8 +199,28 @@ func TestDrillsCellWithNoSlotNumber(t *testing.T) {
 }
 
 func TestDrillsWhitespaceCellIsNotEmpty(t *testing.T) {
-	rep := runDrills(t, "Test Line,DRIL_Test,1,3,1.8,2.2,,1,1,1,0.3,0,,100,,,,1\n1,2, \n")
-	wantFinding(t, rep, 3, "one element before the start")
+	rep := runDrills(t, "Test Line,DRIL_Test,1,3,1.8,2.2,,1,1,1,0.3,0,,100,,,,1\n1,2,   \n")
+	wantFinding(t, rep, 3, "cell holds 3 spaces, not a slot number")
+	// Engine 1.019 trims the cell, so the drill loads correctly on a current
+	// build and this is only worth a warning.
+	wantSeverity(t, rep, 3, "cell holds 3 spaces", report.Warn)
+	// The cell prints as nothing once trimmed, so the detail has to quote
+	// it and name the cell the designer has to go and clear.
+	wantDetail(t, rep, 3, `cell: "   " -- 3 spaces, not an empty cell`)
+	wantDetail(t, rep, 3, "clear cell C3 in the spreadsheet")
+}
+
+func TestDrillsTabCellIsNotEmpty(t *testing.T) {
+	rep := runDrills(t, "Test Line,DRIL_Test,1,3,1.8,2.2,,1,1,1,0.3,0,,100,,,,1\n1,2,\t\n")
+	wantFinding(t, rep, 3, "cell holds 1 tab, not a slot number")
+}
+
+func TestColLetters(t *testing.T) {
+	for n, want := range map[int]string{1: "A", 4: "D", 26: "Z", 27: "AA", 28: "AB", 52: "AZ", 53: "BA"} {
+		if got := colLetters(n); got != want {
+			t.Errorf("colLetters(%d) = %q, want %q", n, got, want)
+		}
+	}
 }
 
 func TestDrillsUnclosedParen(t *testing.T) {

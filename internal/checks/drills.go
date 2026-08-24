@@ -441,7 +441,8 @@ func checkDrillMap(f *datacsv.File, d DrillRecord, sets *NameSets, rep *report.R
 // drillCell is one cell of a slot map, as the loader reads it.
 type drillCell struct {
 	Col      int
-	Text     string // the cell as written
+	Text     string // the cell as written, trimmed for display
+	Raw      string // the cell exactly as it sits in the file, whitespace and all
 	Slot     int    // the slot id, as the loader reads it
 	SlotText string // the text the slot id was read from
 	Empty    bool   // the loader took its empty-cell path and placed nobody
@@ -459,7 +460,7 @@ func checkDrillCell(f *datacsv.File, d DrillRecord, c drillCell, lineNo int, slo
 	where := fmt.Sprintf("%s, column %d of the slot map", d.Label(), c.Col+1)
 
 	if c.Unclosed {
-		rep.Errorf(check, f.Path, lineNo, "cell: "+trim(c.Text),
+		rep.Errorf(check, f.Path, lineNo, cellDetail(c),
 			"%s: '(' with no ')' -- the loader reads the rest of the line as this cell's parameters and places nobody after it", where)
 		return
 	}
@@ -468,16 +469,31 @@ func checkDrillCell(f *datacsv.File, d DrillRecord, c drillCell, lineNo int, slo
 		// The loader only takes its empty-cell shortcut when the cell opens
 		// with a comma. Anything else carrying no slot number falls through to
 		// the placement code, which indexes the drill's arrays at slot-1.
-		rep.Errorf(check, f.Path, lineNo, "cell: "+trim(c.Text),
+		//
+		// A cell holding nothing but whitespace looks empty in a spreadsheet,
+		// so say plainly that it is not, and where to go and clear it.
+		//
+		// The loader trims a cell before reading it as of engine 1.019, so this
+		// is a warning: the drill loads correctly on a current build. On any
+		// build before that the cell is read as slot 0 and the man's sprite,
+		// facing, subtype and lock land one element before the arrays.
+		if blank := describeBlank(c.Raw); blank != "" {
+			rep.Warnf(check, f.Path, lineNo, cellDetail(c)+"\n"+
+				fmt.Sprintf("clear cell %s%d in the spreadsheet -- it should hold nothing at all, not %s", colLetters(c.Col+1), lineNo, blank),
+				"%s: cell holds %s, not a slot number -- engine 1.019 trims it away, but on an earlier build it places a man at slot 0 and writes his sprite, facing, subtype and lock one element before the start of the drill's arrays",
+				where, blank)
+			return
+		}
+		rep.Errorf(check, f.Path, lineNo, cellDetail(c),
 			"%s: cell has no slot number -- the loader writes this cell's sprite, facing, subtype and lock one element before the start of the drill's arrays", where)
 		return
 	}
 	if _, err := strconv.Atoi(c.SlotText); err != nil {
-		rep.Errorf(check, f.Path, lineNo, "cell: "+trim(c.Text),
+		rep.Errorf(check, f.Path, lineNo, cellDetail(c),
 			"%s: slot id %q is not a whole number -- the loader reads it as %d", where, c.SlotText, c.Slot)
 	}
 	if c.Slot < 0 {
-		rep.Errorf(check, f.Path, lineNo, "cell: "+trim(c.Text),
+		rep.Errorf(check, f.Path, lineNo, cellDetail(c),
 			"%s: slot id is %d -- the loader indexes the drill's arrays with it and writes outside them", where, c.Slot)
 		return
 	}
@@ -517,7 +533,7 @@ func checkDrillParams(f *datacsv.File, c drillCell, lineNo int, where string, se
 		case prRowDist, prColDist:
 			v, err := strconv.ParseFloat(strings.TrimSuffix(raw, "+"), 64)
 			if err != nil {
-				rep.Errorf(check, f.Path, lineNo, "cell: "+trim(c.Text),
+				rep.Errorf(check, f.Path, lineNo, cellDetail(c),
 					"%s: %s is %q, not a number -- the loader reads it as 0 and falls back to the drill's own spacing",
 					where, paramNames[i], raw)
 				continue
@@ -526,20 +542,20 @@ func checkDrillParams(f *datacsv.File, c drillCell, lineNo int, where string, se
 			// zero -- "if (srow > 0) form->row[...] = srow" -- so a negative
 			// one is parsed and then dropped on the floor.
 			if v < 0 {
-				rep.Warnf(check, f.Path, lineNo, "cell: "+trim(c.Text),
+				rep.Warnf(check, f.Path, lineNo, cellDetail(c),
 					"%s: %s is %s -- the loader only applies a distance above zero, so this man keeps the drill's own spacing",
 					where, paramNames[i], raw)
 			}
 		case prSubForm:
 			if _, ok := sets.Drill[strings.ToUpper(raw)]; !ok {
-				rep.Errorf(check, f.Path, lineNo, "cell: "+trim(c.Text),
+				rep.Errorf(check, f.Path, lineNo, cellDetail(c),
 					"%s: subform names drill %q, which is not defined -- this man falls back to the drill's own sub formation",
 					where, raw)
 			}
 		default:
 			v, err := strconv.Atoi(raw)
 			if err != nil {
-				rep.Errorf(check, f.Path, lineNo, "cell: "+trim(c.Text),
+				rep.Errorf(check, f.Path, lineNo, cellDetail(c),
 					"%s: %s is %q, not a whole number -- the loader reads it as %d",
 					where, paramNames[i], raw, datacsv.Atoi(raw))
 				continue
@@ -558,6 +574,65 @@ func checkDrillParams(f *datacsv.File, c drillCell, lineNo int, where string, se
 			}
 		}
 	}
+}
+
+// cellDetail renders a cell for the detail line under a finding. A cell that
+// holds only whitespace prints as nothing once trimmed, which reads as though
+// the validator is complaining about an empty cell, so quote it verbatim and
+// say what is in it.
+func cellDetail(c drillCell) string {
+	if blank := describeBlank(c.Raw); blank != "" {
+		return fmt.Sprintf("cell: %q -- %s, not an empty cell", trim(c.Raw), blank)
+	}
+	return "cell: " + trim(c.Text)
+}
+
+// describeBlank names what a whitespace-only cell is made of, for a message a
+// designer can act on. It returns "" for a cell with anything else in it.
+func describeBlank(s string) string {
+	if s == "" || strings.TrimSpace(s) != "" {
+		return ""
+	}
+	runes := []rune(s)
+	name := ""
+	for _, r := range runes {
+		var n string
+		switch r {
+		case ' ':
+			n = "space"
+		case '\t':
+			n = "tab"
+		case '\u00a0':
+			n = "non-breaking space"
+		default:
+			n = "whitespace character"
+		}
+		if name == "" {
+			name = n
+		} else if name != n {
+			name = "whitespace character"
+		}
+	}
+	if len(runes) > 1 {
+		if name == "non-breaking space" {
+			name = "non-breaking spaces"
+		} else {
+			name += "s"
+		}
+	}
+	return fmt.Sprintf("%d %s", len(runes), name)
+}
+
+// colLetters turns a 1-based column number into its spreadsheet letters, so a
+// finding points at the cell the designer is looking at.
+func colLetters(n int) string {
+	out := ""
+	for n > 0 {
+		n--
+		out = string(rune('A'+n%26)) + out
+		n /= 26
+	}
+	return out
 }
 
 // drillCells walks a slot-map line the way the loader's inner loop does: it
@@ -598,6 +673,7 @@ func nextDrillCell(s string) (c drillCell, rest string) {
 			// remainder and leaves nothing behind, so the line ends here.
 			c.Unclosed = true
 			c.Params = strings.Split(s, "-")
+			c.Raw = start
 			c.Text = strings.TrimSpace(start)
 			return c, ""
 		}
@@ -613,7 +689,8 @@ func nextDrillCell(s string) (c drillCell, rest string) {
 	}
 	c.SlotText = strings.TrimSpace(field)
 	c.Slot = datacsv.Atoi(field)
-	c.Text = strings.TrimSuffix(strings.TrimSpace(start[:len(start)-len(s)]), ",")
+	c.Raw = strings.TrimSuffix(start[:len(start)-len(s)], ",")
+	c.Text = strings.TrimSpace(c.Raw)
 	return c, s
 }
 
