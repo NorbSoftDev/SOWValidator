@@ -419,6 +419,15 @@ Reports sprites defined more than once. The engine logs this too
  but the message scrolls past at startup; the later
 definition wins and the earlier is deleted.
 
+## How it reports
+
+Findings are ordered by severity, then file, then line, so everything found in
+one row arrives together. Only the first of such a run carries the file and
+line; the rest are tab-indented under it. One row is often wrong many ways at
+once — a slot map with fifteen bad cells is a single line of the file — and
+repeating the path fifteen times buries the one place the reader has to go.
+`-json` is unaffected: each finding carries its own file and line there.
+
 ## How it reads the data
 
 - **Row filter** matches the engine: line 1 is the header, and any line that is

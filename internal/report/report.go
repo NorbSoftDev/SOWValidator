@@ -109,21 +109,41 @@ func (r *Report) sortFindings() {
 }
 
 // WriteText renders a human-readable report. Returns true if any errors were found.
+//
+// Findings are sorted by severity, then file, then line, so everything found
+// in one row arrives together. Only the first of such a run is given its
+// location; the rest are indented under it. One row can easily be wrong
+// fifteen ways -- a slot map with fifteen bad cells is one line of the file --
+// and repeating the path and severity fifteen times buries the one thing the
+// reader has to go and fix.
 func (r *Report) WriteText(w io.Writer, quiet bool) bool {
 	r.sortFindings()
 
+	prevFile, prevLine := "", 0
 	for _, f := range r.Findings {
 		if quiet && f.Severity < Error {
 			continue
 		}
-		loc := r.rel(f.File)
-		if f.Line > 0 {
-			loc = fmt.Sprintf("%s:%d", loc, f.Line)
+
+		// Line 0 is a finding against a file rather than a row, so it never
+		// joins a run: two of those are two separate things about the file.
+		indent := ""
+		if f.Line > 0 && f.Line == prevLine && f.File == prevFile {
+			indent = "\t"
+			fmt.Fprintf(w, "%s%s [%s]\n", indent, f.Message, f.Check)
+		} else {
+			loc := r.rel(f.File)
+			if f.Line > 0 {
+				loc = fmt.Sprintf("%s:%d", loc, f.Line)
+			}
+			fmt.Fprintf(w, "%s: %s: %s [%s]\n", loc, f.Severity, f.Message, f.Check)
 		}
-		fmt.Fprintf(w, "%s: %s: %s [%s]\n", loc, f.Severity, f.Message, f.Check)
+		prevFile, prevLine = f.File, f.Line
+
+		// Detail stays nested under whichever of the two its finding was.
 		if f.Detail != "" {
 			for _, line := range strings.Split(f.Detail, "\n") {
-				fmt.Fprintf(w, "    %s\n", line)
+				fmt.Fprintf(w, "%s    %s\n", indent, line)
 			}
 		}
 	}
