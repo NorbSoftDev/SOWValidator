@@ -465,6 +465,17 @@ Every CSV the engine loads, each against its own loader.
 
 **Maps** — every `.csv` in each layer's `Maps` folder, section by section.
 
+A map's `.csv` is several tables laid end to end, and the greyscale values they
+use are **one table between them**, not one per section: `TERRAIN TABLE BRUSH`
+and `TERRAIN TABLE FORTS` both write into `gLand.m_ground[val]`
+(`War3D/world.cpp:311` and `:428`), the forts merely tagged `SGFort`. So a fort
+occupies a greyscale slot exactly as a terrain does, and the sounds section's
+`Terrain` column — read into `m_fort`, "ground value for fort smoke"
+(`War3D/trees.cpp:144`) — normally names a **fort** rather than a brush
+terrain. Both sections are therefore read before any value is resolved against
+the table. A zero there means the row is not fort smoke at all
+(`War3D/trees.cpp:183`).
+
 **Scenarios** — every scenario folder, because every one of them is a scenario
 the player can pick: its `scenario.csv` joined to the master order of battle it
 names, its `maplocations.csv`, its `battlescript.csv` checked against both, and

@@ -198,10 +198,16 @@ func Maps(f *datacsv.File, sets *NameSets, sprites *SpriteSet, rep *report.Repor
 		return
 	}
 
+	// The ground table is one table, not one per section: the brush rows and
+	// the fort rows both write into gLand.m_ground[val] (War3D/world.cpp:311
+	// and :428), the forts merely tagged SGFort. So the forts have to be read
+	// into it before anything resolves a value against it -- the sounds
+	// section names a fort's own greyscale, and reading it after would report
+	// every fort in the game as undefined terrain.
 	grounds := checkMapBrush(f, brush, sprites, rep)
+	checkMapForts(f, m.Sections[mapForts], grounds, rep)
 	checkMapSounds(f, m.Sections[mapSounds], grounds, sets, sprites, rep)
 	checkMapObjectives(f, m.Sections[mapObjectives], rep)
-	checkMapForts(f, m.Sections[mapForts], grounds, rep)
 }
 
 // checkMapBrush validates the terrain table and returns the greyscale values it
@@ -300,12 +306,19 @@ func checkMapSounds(f *datacsv.File, s MapSection, grounds map[int]int, sets *Na
 			}
 		}
 
-		// The terrain column names a greyscale value back in the brush table.
+		// The terrain column names a greyscale value in the ground table,
+		// and what it is for is a fort: STree::Init reads it into m_fort,
+		// "ground value for fort smoke" (War3D/trees.cpp:144). Most of these
+		// name a fort rather than a brush terrain, so both sections count. A
+		// zero is how the row says it is not fort smoke at all
+		// (War3D/trees.cpp:183), and the engine claims the path value for
+		// itself after reading the file.
 		if raw := row.Field(snTerrain); raw != "" {
 			if v, err := strconv.Atoi(raw); err == nil {
 				if _, ok := grounds[v]; !ok && v != mapDeadVal && v != mapPathVal {
-					rep.Warnf("map", f.Path, row.Line, "",
-						"terrain %d %s is not defined in the %s section", v, where, mapBrush)
+					rep.Warnf("map", f.Path, row.Line,
+						"the engine reads gLand.m_ground[m_fort]->CurDam() without checking it (War3D/trees.cpp:488)",
+						"terrain %d %s names neither a %s terrain nor a %s", v, where, mapBrush, mapForts)
 				}
 			}
 		}
