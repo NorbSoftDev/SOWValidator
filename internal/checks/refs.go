@@ -27,6 +27,10 @@ type NameSets struct {
 	Effect    map[string]string // UPPER efx ID            -> where
 	Font      map[string]string // UPPER gamefonts ID      -> where
 
+	// DrillForm is what each drill asks of the class using it, which is a
+	// property of the pair rather than of either file. Keyed UPPER like Drill.
+	DrillForm map[string]*DrillForm
+
 	// unread records, per file name, a copy of that file whose layout its
 	// loader no longer reads. A rejected file leaves its name set short of
 	// whatever it defines, so a reference that fails to resolve against that
@@ -47,8 +51,15 @@ func NewNameSets() *NameSets {
 		Weapon:    map[string]string{},
 		Effect:    map[string]string{},
 		Font:      map[string]string{},
+		DrillForm: map[string]*DrillForm{},
 		unread:    map[string]string{},
 	}
+}
+
+// DrillForm is what one drill asks of whichever class is placed in it: the
+// uniform slots its cells select, and where each is selected from.
+type DrillForm struct {
+	Sprites map[int]string // 1-based uniform slot -> "file:line" of a cell selecting it
 }
 
 // MarkUnread records that a copy of base, at where, is in a layout its loader

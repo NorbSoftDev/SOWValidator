@@ -170,7 +170,45 @@ func (n *NameSets) AddDrills(f *datacsv.File, short string) {
 		if _, exists := n.Drill[id]; !exists {
 			n.Drill[id] = fmt.Sprintf("%s:%d", short, d.Line)
 		}
+		// What the drill asks of whichever class uses it, on the other hand,
+		// is taken from the copy the engine will actually read: these merge
+		// row by row like any other keyed file, so a later layer redefining a
+		// drill replaces the one below it.
+		n.DrillForm[id] = drillForm(d, short)
 	}
+}
+
+// drillForm records what a drill asks of the class using it: which uniform
+// slots its cells select, and which other drills its men can be handed on to.
+//
+// The sprite value is 1-based into the class's six uniforms --
+// "m_man[k].sindex = form->Spr(k) - 1" (War3D/unit.cpp:923) -- so a drill and
+// a class are only compatible if the class fills every slot the drill selects.
+// Slot 1 is left out: that man is the flag bearer, and both places the engine
+// assigns a sprite give him "sindex = -1" before ever reading Spr, so a sprite
+// written on his cell is dead data.
+func drillForm(d DrillRecord, short string) *DrillForm {
+	form := &DrillForm{Sprites: map[int]string{}}
+
+	for k, line := range d.Map {
+		cells, _ := drillCells(line, d.Cols)
+		for _, c := range cells {
+			if c.Empty || !c.Paren {
+				continue
+			}
+			if c.Slot <= 1 || len(c.Params) <= prSprite {
+				continue
+			}
+			v, err := strconv.Atoi(strings.TrimSpace(c.Params[prSprite]))
+			if err != nil || v <= 0 {
+				continue
+			}
+			if _, seen := form.Sprites[v]; !seen {
+				form.Sprites[v] = fmt.Sprintf("%s:%d", short, d.MapAt+k)
+			}
+		}
+	}
+	return form
 }
 
 // maxOutOfStep is how many stranded lines to list one by one before summing up

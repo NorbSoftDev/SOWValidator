@@ -348,6 +348,35 @@ left, so the check follows the row to its end rather than stopping at the last
 labelled column. Most rows are short, which is how the file says a class has no
 such formation, so only a name that fails to resolve is reported.
 
+**A drill and a class have to agree about uniforms.** A slot-map cell may pick
+which of the class's six uniforms that one man wears, and the engine reads the
+value as 1-based into the class's own sprite slots:
+
+```
+m_man[k].sindex = form->Spr(k) - 1;
+if ( !m_class->GetSprite(m_man[k].sindex, eUnitStand) )
+{
+    CUtil::AddLog( "ERROR Form Sprite Request. Form:%s Class:%s Index:%d", ... );
+    m_man[k].sindex = 0;
+}
+```
+
+So a value well inside the array — a 5, where the class fills only the first
+two uniforms — lands on a slot that is `NULL`, and that man silently wears
+uniform 1 instead of the one the drill asked for. Neither file is wrong on its
+own, which is why no check that reads one file at a time can see it: it is a
+property of the pair. Each is reported once per class and uniform, however many
+of the class's drills ask for it, since one missing uniform is one thing to fix.
+
+Two things bound it deliberately. A sprite written on **slot 1 is not asked of
+the class**, because that man is the flag bearer and both places the engine
+assigns a sprite give him `sindex = -1` before ever reading `Spr`. And a
+drill's **`SubForm` and `ArtyForm` are not followed**: `SForm::Sub` is called
+only from `unitbrig.cpp`, where a brigade picks the formation of a *subordinate*
+unit, and that subordinate is a separate unit with its own class. Following the
+chain reports an infantry commander for what an artillery drill wants — which
+it did, 96 times across the two shipped games, before the chain was cut.
+
 Ranges are not enforced anywhere here, for the same reason as in `drills`: the
 loader imposes none, and what it really does with a bad value — reads it as
 zero, drops it, or dereferences a pointer it never set — is the thing worth

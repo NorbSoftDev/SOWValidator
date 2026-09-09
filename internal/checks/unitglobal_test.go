@@ -289,3 +289,99 @@ func TestUnitGlobalQuotedField(t *testing.T) {
 	r[ugMenu1] = `"Stand, at ease"`
 	wantClean(t, runUnitGlobal(t, ugRow(r)))
 }
+
+// --- a class against the drills it is placed in ------------------------------
+//
+// A drill cell may pick which of the class's six uniforms one man wears, and
+// the engine reads that value as 1-based into the class's own sprite slots. So
+// the pairing can be wrong while neither file is wrong on its own, which is
+// what these pin down.
+
+// newUnitGlobalWorldWithDrill reads a real drills.csv into the name sets, so
+// the drills a class names carry their actual per-slot sprite values rather
+// than a hand-built stand-in.
+func newUnitGlobalWorldWithDrill(t *testing.T, body string) *NameSets {
+	t.Helper()
+
+	p := filepath.Join(t.TempDir(), "drills.csv")
+	if err := os.WriteFile(p, []byte(drillHeader+"\n"+body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := datacsv.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sets := newUnitGlobalWorld()
+	sets.AddDrills(f, "drills.csv")
+	return sets
+}
+
+func TestUnitGlobalDrillWantsUniformTheClassLeavesBlank(t *testing.T) {
+	sets := newUnitGlobalWorldWithDrill(t, "Test,DRIL_Test,1,2,10,10\n1,(0-0-2)2\n")
+	rep := runUnitGlobalIn(t, sets, ugRow(ugValid()))
+	wantFinding(t, rep, 2, "selects uniform 2, which this class does not fill")
+}
+
+func TestUnitGlobalDrillWantsUniformTheClassFills(t *testing.T) {
+	sets := newUnitGlobalWorldWithDrill(t, "Test,DRIL_Test,1,2,10,10\n1,(0-0-2)2\n")
+	r := ugValid()
+	r[ugUniform1+1] = "USPR_Test"
+	wantClean(t, runUnitGlobalIn(t, sets, ugRow(r)))
+}
+
+// A uniform named but unresolved leaves the slot NULL exactly as a blank one
+// does, so a drill selecting it lands on nothing either way.
+func TestUnitGlobalDrillWantsUniformThatDoesNotResolve(t *testing.T) {
+	sets := newUnitGlobalWorldWithDrill(t, "Test,DRIL_Test,1,2,10,10\n1,(0-0-2)2\n")
+	r := ugValid()
+	r[ugUniform1+1] = "USPR_Nope"
+	rep := runUnitGlobalIn(t, sets, ugRow(r))
+	wantFinding(t, rep, 2, "selects uniform 2, which this class does not fill")
+}
+
+// Slot 1 is the flag bearer, and both places the engine assigns a man his
+// sprite give him "sindex = -1" before ever reading Spr, so a sprite written
+// on his cell is never read and is not the class's business.
+func TestUnitGlobalDrillSpriteOnFlagBearerIsNotAsked(t *testing.T) {
+	sets := newUnitGlobalWorldWithDrill(t, "Test,DRIL_Test,1,2,10,10\n(0-0-2)1,2\n")
+	wantClean(t, runUnitGlobalIn(t, sets, ugRow(ugValid())))
+}
+
+// SForm::Sub is called only from unitbrig.cpp, where a brigade picks the
+// formation of a subordinate unit -- which has its own class. Following the
+// chain would blame this class for what another one's drill wants.
+func TestUnitGlobalSubFormationIsNotFollowed(t *testing.T) {
+	sets := newUnitGlobalWorldWithDrill(t,
+		"Test,DRIL_Test,1,2,10,10,DRIL_Sub\n1,2\n"+
+			"Sub,DRIL_Sub,1,2,10,10\n1,(0-0-3)2\n")
+	wantClean(t, runUnitGlobalIn(t, sets, ugRow(ugValid())))
+}
+
+// Past the sixth there is no slot to fill at all. That is the drill's own
+// fault and its own checks report it against the cell holding it, so it is not
+// reported a second time against every class naming the drill.
+func TestUnitGlobalDrillSpriteAboveTheLastUniform(t *testing.T) {
+	sets := newUnitGlobalWorldWithDrill(t, "Test,DRIL_Test,1,2,10,10\n1,(0-0-7)2\n")
+	wantClean(t, runUnitGlobalIn(t, sets, ugRow(ugValid())))
+}
+
+// A drill the class does not name cannot place its men, so what it selects is
+// nothing to do with this class.
+func TestUnitGlobalDrillTheClassDoesNotName(t *testing.T) {
+	sets := newUnitGlobalWorldWithDrill(t,
+		"Test,DRIL_Test,1,2,10,10\n1,2\n"+
+			"Other,DRIL_Other,1,2,10,10\n1,(0-0-4)2\n")
+	wantClean(t, runUnitGlobalIn(t, sets, ugRow(ugValid())))
+}
+
+// One missing uniform is one thing to fix however many drills select it.
+func TestUnitGlobalManyDrillsOneMissingUniform(t *testing.T) {
+	sets := newUnitGlobalWorldWithDrill(t,
+		"Test,DRIL_Test,1,2,10,10\n1,(0-0-2)2\n"+
+			"Two,DRIL_Two,1,2,10,10\n1,(0-0-2)2\n")
+	r := ugValid()
+	r[ugFormType1+1] = "DRIL_Two"
+	rep := runUnitGlobalIn(t, sets, ugRow(r))
+	wantFinding(t, rep, 2, "drills DRIL_TEST and DRIL_TWO select uniform 2")
+}

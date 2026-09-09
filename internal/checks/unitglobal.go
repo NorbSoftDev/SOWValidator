@@ -2,6 +2,7 @@ package checks
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -82,7 +83,8 @@ func UnitGlobal(f *datacsv.File, sets *NameSets, rep *report.Report) {
 		checkUnitGlobalType(f, row, class, sets, rep)
 		checkUnitGlobalClassRefs(f, row, class, sets, rep)
 		checkUnitGlobalSpeeds(f, row, class, rep)
-		checkUnitGlobalSprites(f, row, class, sets, rep)
+		uniforms := checkUnitGlobalSprites(f, row, class, sets, rep)
+		checkUnitGlobalFormSprites(f, row, class, uniforms, sets, rep)
 		unheard += checkUnitGlobalSounds(f, row, class, sets, rep)
 		unformed += checkUnitGlobalFormTypes(f, row, class, sets, rep)
 	}
@@ -218,17 +220,23 @@ func checkUnitGlobalSpeeds(f *datacsv.File, row datacsv.Row, class string, rep *
 // whatever was on the heap. FindClass then dereferences it without a null
 // check. The six uniforms do not have this problem: the loader sets each of
 // them to NULL before looking it up.
-func checkUnitGlobalSprites(f *datacsv.File, row datacsv.Row, class string, sets *NameSets, rep *report.Report) {
+func checkUnitGlobalSprites(f *datacsv.File, row datacsv.Row, class string, sets *NameSets, rep *report.Report) [ugUniforms]uniformState {
 	const check = "unitglobal-ref"
 
+	var state [ugUniforms]uniformState
 	filled := 0
 	for j := range ugUniforms {
 		ref := row.Field(ugUniform1 + j)
 		if ref == "" {
+			state[j] = uniformBlank
 			continue
 		}
-		if checkModelRef(f, row, class, ugLabel(f, ugUniform1+j, fmt.Sprintf("Uniform %d", j+1)), ref, sets, rep) && j < ugRandomUniforms {
-			filled++
+		if checkModelRef(f, row, class, ugLabel(f, ugUniform1+j, fmt.Sprintf("Uniform %d", j+1)), ref, sets, rep) {
+			if j < ugRandomUniforms {
+				filled++
+			}
+		} else {
+			state[j] = uniformBroken
 		}
 	}
 
@@ -249,7 +257,7 @@ func checkUnitGlobalSprites(f *datacsv.File, row datacsv.Row, class string, sets
 			"SSoldCmn has no constructor, so the pointer is whatever was on the heap; FindClass then dereferences it without checking",
 			"%s: %s is blank -- the loader leaves the flag bearer pointer uninitialised rather than null, and the game reads through it the first time this class is used",
 			class, label)
-		return
+		return state
 	}
 	if !checkModelRef(f, row, class, label, flag, sets, rep) {
 		rep.Errorf("unitglobal", f.Path, row.Line,
@@ -257,6 +265,132 @@ func checkUnitGlobalSprites(f *datacsv.File, row datacsv.Row, class string, sets
 			"%s: because %s does not resolve, the loader leaves that pointer uninitialised and the game reads through it the first time this class is used",
 			class, label)
 	}
+	return state
+}
+
+// uniformState is what one of a class's six uniform slots came to once the
+// loader had tried to resolve it. Both failures leave the slot NULL, which is
+// what a drill selecting that slot then runs into.
+type uniformState int
+
+const (
+	uniformOK uniformState = iota
+	uniformBlank
+	uniformBroken
+)
+
+// classDrills lists the drills a class's own men can be placed in, which is
+// exactly what its formation columns name: "m_formation = theApp.Form()->
+// GetForm( m_class->m_formtype[eFTMarch] )" (War3D/unit.cpp:344), and every
+// other assignment goes through m_formtype the same way.
+//
+// A drill's SubForm and ArtyForm are deliberately not followed. Those are not
+// another formation for these men -- SForm::Sub is called only from
+// unitbrig.cpp, where a brigade uses it to pick the formation of a subordinate
+// unit, and it switches on that subordinate's own type. The subordinate is a
+// separate unit with its own class, so the uniforms its drill selects are
+// asked of that class, not this one. Following the chain would blame an
+// infantry commander for what an artillery drill wants.
+func classDrills(row datacsv.Row) []string {
+	seen := map[string]bool{}
+	var out []string
+
+	for col := ugFormType1; col < row.Len(); col++ {
+		id := strings.ToUpper(row.Field(col))
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}
+
+// checkUnitGlobalFormSprites pairs a class against the drills it can be placed
+// in. A drill cell may choose which of the class's six uniforms one man wears,
+// and the engine takes that value as 1-based (War3D/unit.cpp:923):
+//
+//	m_man[k].sindex = form->Spr(k) - 1;
+//	if ( !m_class->GetSprite(m_man[k].sindex, eUnitStand) )
+//	{
+//	    CUtil::AddLog( "ERROR Form Sprite Request. Form:%s Class:%s Index:%d", ... );
+//	    m_man[k].sindex = 0;
+//	}
+//
+// So a value well inside the array can still land on a slot this class left
+// NULL, and that man silently wears uniform 1 instead of the one the drill
+// asked for. Neither file is wrong on its own, which is why no check that
+// reads one file at a time can see it. The engine's other assignment site
+// (War3D/unit.cpp:2940) does not even test: it stores the index and lets
+// GetSprite hand back NULL.
+func checkUnitGlobalFormSprites(f *datacsv.File, row datacsv.Row, class string, state [ugUniforms]uniformState, sets *NameSets, rep *report.Report) {
+	const check = "unitglobal-ref"
+
+	// Which drills select each uniform slot the class does not fill, keyed by
+	// slot: one missing uniform is one thing to fix however many drills want
+	// it, and a class is typically named by a dozen drills at once.
+	asked := map[int][]string{}
+	where := map[int]string{}
+
+	for _, id := range classDrills(row) {
+		form := sets.DrillForm[id]
+		if form == nil {
+			continue
+		}
+		for v, at := range form.Sprites {
+			// Past the sixth there is no slot to fill, and the drill checks
+			// have already reported that value against the cell holding it.
+			if v > ugUniforms || state[v-1] == uniformOK {
+				continue
+			}
+			if _, dup := where[v]; !dup {
+				where[v] = at
+			}
+			asked[v] = append(asked[v], id)
+		}
+	}
+
+	for _, v := range sortedKeys(asked) {
+		drills := asked[v]
+		sort.Strings(drills)
+
+		label := ugLabel(f, ugUniform1+v-1, fmt.Sprintf("Uniform %d", v))
+		reason := label + " is blank"
+		if state[v-1] == uniformBroken {
+			reason = label + " names a sprite set that does not resolve"
+		}
+		phrase, verb := drillsPhrase(drills)
+		rep.Errorf(check, f.Path, row.Line,
+			fmt.Sprintf("%s selects it; %s", where[v], reason),
+			"%s: %s %s uniform %d, which this class does not fill -- those men wear uniform 1 instead, and the engine logs \"ERROR Form Sprite Request\"",
+			class, phrase, verb, v)
+	}
+}
+
+// drillsPhrase names the drills asking for a uniform without printing a list
+// as long as the file, and hands back the verb that agrees with it. One name
+// is the useful case; past a couple, the count is what says this is a property
+// of the class rather than of any one drill.
+func drillsPhrase(ids []string) (phrase, verb string) {
+	switch len(ids) {
+	case 1:
+		return "drill " + ids[0], "selects"
+	case 2:
+		return "drills " + ids[0] + " and " + ids[1], "select"
+	default:
+		return fmt.Sprintf("drill %s and %d others", ids[0], len(ids)-1), "select"
+	}
+}
+
+// sortedKeys orders a map's integer keys, so the report reads the same way
+// every run.
+func sortedKeys[V any](m map[int]V) []int {
+	out := make([]int, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Ints(out)
+	return out
 }
 
 // It returns how many names it had to leave unjudged.
