@@ -273,7 +273,11 @@ the way `CForm::Init` does, and then apply that loader's own rules.
   opened on the drill ID with no `Name` column, so every value lands one column
   from where the loader looks — is reported once, against its header.
 - **Slot placement.** Slots placed twice, slots never placed, and slot ids past
-  the engine's limit of 200, which the loader silently drops. A drill with fewer
+  the engine's limit of 200 (`MAXMEN`, `War3D/defines.h:62`), which the loader
+  silently drops. That limit is the whole of the rule: the file's own notes
+  rows still give the men as `2-125`, which no longer describes this loader —
+  the shipped drills place men right up to slot 200 and the engine draws every
+  one of them. A drill with fewer
   than two men in it is reported as a hang: `SForm::Max` loops
   `while (i >= imaxmen) i = i - imaxmen + 1`, which never terminates for an
   `imaxmen` below 2, and every slot lookup goes through it.

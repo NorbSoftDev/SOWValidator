@@ -71,9 +71,8 @@ const (
 	// SForm array is [MAXMEN+1], so Rows or Columns above maxMen-1 walks off
 	// the grid, and a slot id above maxMen is thrown away.
 	maxMen = 200
-	// maxDocSlot and maxDocSprite are the limits the file's own notes state:
-	// "1 - flagbearer, 2-125 men", and sprite "valid values are currently 1-6".
-	maxDocSlot   = 125
+	// maxDocSprite is the limit the file's own notes state for a cell's
+	// sprite: "valid values are currently 1-6".
 	maxDocSprite = 6
 	// maxSubType is the highest unit type those notes list: 1-Inf, 2-Cav, 3-Art.
 	maxSubType = 3
@@ -497,14 +496,15 @@ func checkDrillCell(f *datacsv.File, d DrillRecord, c drillCell, lineNo int, slo
 			"%s: slot id is %d -- the loader indexes the drill's arrays with it and writes outside them", where, c.Slot)
 		return
 	}
+	// MAXMEN is the whole of the rule. The file's notes rows still give the
+	// men as 2-125, which was true of some earlier build and is not true of
+	// this loader: the shipped drills place men right up to slot 200, and the
+	// engine draws every one of them. Reporting those would be 1,800 warnings
+	// about the base game working correctly.
 	if c.Slot > maxMen {
 		rep.Errorf(check, f.Path, lineNo, fmt.Sprintf("the engine's limit is %d", maxMen),
 			"%s: slot id is %d -- the loader drops this man", where, c.Slot)
 		return
-	}
-	if c.Slot > maxDocSlot {
-		rep.Warnf(check, f.Path, lineNo, "the file's notes give the slots as 1 for the flag bearer and 2-125 for men",
-			"%s: slot id is %d, above the documented maximum of %d", where, c.Slot, maxDocSlot)
 	}
 	if prev, dup := slotAt[c.Slot]; dup {
 		rep.Errorf(check, f.Path, lineNo, fmt.Sprintf("already placed at line %d", prev),
